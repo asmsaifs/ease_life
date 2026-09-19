@@ -264,11 +264,28 @@ def _async_register_services(hass: HomeAssistant) -> None:
             # Prefer the already-running live upstream: the VRS server does
             # not tolerate a second concurrent live session well (it goes
             # quiet and is then closed, killing a dedicated talk session).
+            # A sender is only obtained while someone is actually watching
+            # or an upstream client is live.
             sender = proxy.talk_sender(device_id)
         try:
             if sender is not None:
-                await talk.async_stream_pcm16(sender, pcm)
-                await sender(talk.talk_stop_frame())
+                try:
+                    await talk.async_stream_pcm16(sender, pcm)
+                    await sender(talk.talk_stop_frame())
+                except vrs_live.TalkSendError as err:
+                    # The ride died mid-flight.  If nobody is watching the
+                    # stream, fall back to a dedicated session rather than
+                    # failing the whole speak.
+                    watching = (
+                        proxy is not None
+                        and proxy.has_active_watcher(device_id)
+                    )
+                    if watching:
+                        raise
+                    _LOGGER.warning(
+                        "ease_life: live upstream unavailable (%s); "
+                        "using a dedicated talk session", err)
+                    await talk.async_speak_pcm16(hass, params, device_id, pcm)
             else:
                 await talk.async_speak_pcm16(hass, params, device_id, pcm)
         except (talk.TalkError, vrs_live.TalkSendError) as err:

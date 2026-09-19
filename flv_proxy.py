@@ -402,6 +402,16 @@ class _DeviceStream:
 
     def unsubscribe(self, sub: _Subscriber) -> None:
         self.subscribers.discard(sub)
+        if not self.subscribers and self._task is not None:
+            self._task.cancel()
+
+    @property
+    def active_watchers(self) -> int:
+        """Count live subscribers that have not already been dropped for
+        falling behind (QueueFull).  A closed video window leaves subscribers
+        behind until the HTTP handler disconnects, so use this instead of the
+        raw set when deciding whether a live watch exists."""
+        return sum(1 for s in self.subscribers if not s.closed)
 
     def _ensure_task(self) -> None:
         if self._task is None or self._task.done():
@@ -670,6 +680,11 @@ class FlvProxy:
             self._streams[device_id] = stream
         return stream
 
+    def has_active_watcher(self, device_id: str) -> bool:
+        """True if someone is currently watching this device's live stream."""
+        stream = self._streams.get(device_id)
+        return stream is not None and stream.active_watchers > 0
+
     def talk_sender(self, device_id: str):
         """Return an async talk-frame sender on the live upstream, if any.
 
@@ -706,7 +721,7 @@ class FlvProxy:
                     raise last_err or TalkSendError("live session not active")
                 await asyncio.sleep(TALK_SEND_RETRY_STEP)
 
-        if not stream.subscribers and stream._client is None:
+        if stream.active_watchers == 0 and stream._client is None:
             return None
         return _send
 
