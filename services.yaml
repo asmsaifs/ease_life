@@ -1,0 +1,59 @@
+ptz:
+  name: Move camera
+  description: Send PTZ step moves to an Ease Life camera (pan/tilt where supported).
+  fields:
+    entity_id:
+      name: Camera
+      description: The Ease Life camera entity to move.
+      required: true
+      selector:
+        entity:
+          domain: camera
+    direction:
+      name: Direction
+      description: Step left/right/up/down, or home to return to the original position.
+      required: true
+      selector:
+        select:
+          options:
+            - left
+            - right
+            - up
+            - down
+            - home
+    steps:
+      name: Steps
+      description: How many steps to send (0.4 s apart).
+      default: 1
+      selector:
+        number:
+          min: 1
+          max: 10
+speak:
+  name: Speak on camera
+  description: Render text with a Home Assistant text-to-speech engine and play it through the camera speaker.
+  fields:
+    entity_id:
+      name: Camera
+      description: The Ease Life camera entity to speak through.
+      required: true
+      selector:
+        entity:
+          domain: camera
+    message:
+      name: Message
+      description: Text to speak.
+      required: true
+      selector:
+        text:
+    engine:
+      name: TTS engine
+      description: TTS engine entity id (defaults to the Home Assistant default engine).
+      selector:
+        entity:
+          domain: tts
+    language:
+      name: Language
+      description: TTS language override.
+      selector:
+        text:

@@ -1,0 +1,31 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Ease Life account",
+        "data": {
+          "email": "Email",
+          "password": "Password",
+          "device_id": "Device UUID (optional)"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Invalid email or password",
+      "cannot_connect": "Cannot reach Ease Life cloud"
+    },
+    "abort": {
+      "already_configured": "This account is already configured"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Ease Life options",
+        "data": {
+          "scan_interval": "Poll interval (seconds)"
+        }
+      }
+    }
+  }
+}
