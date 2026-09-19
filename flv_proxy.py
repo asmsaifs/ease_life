@@ -72,6 +72,72 @@ def _tag_total(tag_type: int, size: int) -> int:
     return 11 + size + 4
 
 
+def _strip_audio_metadata(tag: bytes) -> bytes:
+    """Strip the ``audiocodecid`` entry from an onMetaData script tag.
+
+    The VRS server always advertises G.711 audio + AVC video, but the proxy
+    forwards video-only when ``keep_audio`` is False.  Passing the audio claim
+    through while sending no audio tags (and a video-only FLV header) is
+    inconsistent metadata that strict FLV readers can trip over.  Rebuild a
+    video-only metadata on a best-effort basis; unrecognised AMF layouts pass
+    through untouched.
+    """
+    body = tag[11:11 + int.from_bytes(tag[1:4], "big")]
+    off = 0
+    if len(body) < 5 or body[off] != 0x02:
+        return tag  # not an AMF string root
+    namelen = int.from_bytes(body[off + 1:off + 3], "big")
+    name = body[off + 3:off + 3 + namelen]
+    if name != b"onMetaData":
+        return tag
+    off = 3 + namelen
+    if body[off] != 0x08:
+        return tag  # not an ECMA array
+    count = int.from_bytes(body[off + 1:off + 5], "big")
+    off += 5
+    entries = []
+    for _ in range(count):
+        if off + 2 > len(body):
+            return tag
+        klen = int.from_bytes(body[off:off + 2], "big")
+        key = body[off + 2:off + 2 + klen]
+        off += 2 + klen
+        if off >= len(body):
+            return tag
+        marker = body[off]
+        if marker == 0x00:  # number
+            end = off + 9
+        elif marker == 0x01:  # boolean
+            end = off + 2
+        elif marker == 0x02:  # string
+            slen = int.from_bytes(body[off + 1:off + 3], "big")
+            end = off + 3 + slen
+        else:
+            return tag
+        if end > len(body):
+            return tag
+        entries.append((key, body[off:end]))
+        off = end
+    if off < len(body):
+        if body[off:off + 3] != b"\x00\x00\x09":  # object-end terminator
+            return tag
+    keep = [e for e in entries if e[0] != b"audiocodecid"]
+    if len(keep) == len(entries):
+        return tag
+    new_body = b"\x02" + namelen.to_bytes(2, "big") + name
+    new_body += b"\x08" + len(keep).to_bytes(4, "big")
+    for key, value in keep:
+        new_body += len(key).to_bytes(2, "big") + key + value
+    new_body += b"\x00\x00\x09"
+    total = 11 + len(new_body) + 4
+    out = bytearray(tag)
+    out[1:4] = len(new_body).to_bytes(3, "big")
+    out[11:11 + len(new_body)] = new_body
+    out = out[:total]
+    out[total - 4:total] = (11 + len(new_body)).to_bytes(4, "big")
+    return bytes(out)
+
+
 def _has_video_keyframe(data: bytes) -> bool:
     """True if raw FLV bytes contain a complete AVC IDR (NALU) tag.
 
@@ -227,7 +293,9 @@ class FlvRewriter:
             if self._seen_script:
                 return b""
             self._seen_script = True
-            return tag
+            if self._keep_audio:
+                return tag
+            return _strip_audio_metadata(tag)
         if tag_type == TAG_AUDIO and not self._keep_audio:
             return b""
         if tag_type == TAG_AUDIO:

@@ -6,7 +6,8 @@ Protocol reverse-engineered in evidence/E-008:
 
   send TEXT : __reqJSONStr=<urlencoded base64(AES-256-CBC(json))>
               key = b"viWebsdkCrypto" zero-padded to 32 bytes, iv = 16 zero bytes, PKCS7
-  send BIN  : 0x03 + urlencode({"time": <ms>, "cmd": 3})   (periodic time sync)
+  send BIN  : 0x03 + urlencode({"time": <ms>, "cmd": 3})   (time sync, sent once
+              after the server initiates the FLV stream, matching the web player)
   recv BIN  : first byte = cmd
               0x00 -> remaining bytes are raw FLV stream data
               0x04 -> urlencoded JSON control response
@@ -103,6 +104,8 @@ class VrsLiveClient:
         self.relay_server = relay_server
         self.has_audio = has_audio
         self._ws = None
+        self._sync_sent = False
+        self._t0 = 0.0
 
     async def async_send_talk(self, payload: bytes) -> None:
         """Write one talk-back frame on this live session.
@@ -126,6 +129,8 @@ class VrsLiveClient:
             async with session.ws_connect(url, headers=headers, heartbeat=20) as ws:
                 self._ws = ws
                 try:
+                    self._t0 = time.monotonic()
+                    self._sync_sent = False
                     await ws.send_str(
                         build_req(
                             self.token,
@@ -136,7 +141,7 @@ class VrsLiveClient:
                         )
                     )
                     _LOGGER.debug("ease_life: VRS live connected for %s", self.device_id)
-                    await self._sync(ws, 0)
+                    send = self._make_sync_sender(ws)
                     while True:
                         if should_stop is not None and should_stop():
                             return
@@ -149,6 +154,7 @@ class VrsLiveClient:
                                 cmd = msg.data[0]
                                 body = msg.data[1:]
                                 if cmd == CMD_FLV:
+                                    await send()
                                     yield body
                                 elif cmd == CMD_RESP_MESSAGE:
                                     _LOGGER.debug(
@@ -171,6 +177,8 @@ class VrsLiveClient:
                                 return
                 finally:
                     self._ws = None
+                    self._sync_sent = False
+                    self._t0 = 0.0
         return
 
     @staticmethod
@@ -179,3 +187,21 @@ class VrsLiveClient:
             json.dumps({"time": elapsed_ms, "cmd": 3})
         )
         await ws.send_bytes(bytes([CMD_REQ_MESSAGE]) + payload.encode())
+
+    def _make_sync_sender(self, ws):
+        """Return a per-session time-sync sender.
+
+        The web player (HAR: all sessions) sends its single ``cmd:3`` time sync
+        only AFTER the server initiates the FLV stream (post init/cmd:4 + first
+        FLV frame), with ``time`` = ms since request.  Sending ``{time:0}``
+        immediately is harmless but differs from the reference wire behaviour;
+        keep the same shape: send once, on the first FLV frame, with elapsed ms.
+        """
+        async def send():
+            if self._sync_sent:
+                return
+            now = time.monotonic()
+            elapsed = int((now - self._t0) * 1000) if self._t0 else 0
+            await self._sync(ws, elapsed)
+            self._sync_sent = True
+        return send
