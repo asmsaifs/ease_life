@@ -107,17 +107,35 @@ class VrsLiveClient:
         self._sync_sent = False
         self._t0 = 0.0
 
-    async def async_send_talk(self, payload: bytes) -> None:
-        """Write one talk-back frame on this live session.
+    def is_sendable(self) -> bool:
+        """True if the live WS can still take writers.
 
-        Raises TalkSendError if the session is gone (read loop owns
-        reconnects; concurrent send/receive on one aiohttp WS is safe).
+        ``ws.closed`` stays False during the server-initiated CLOSE handshake,
+        so an upsert against a session that is mid-teardown (VRS caps a live
+        session at ~60-100 s and the proxy hands over to a standby) would hit
+        "Cannot write to closing transport".  Expose aiohttp's ``closing``
+        state so callers can wait for the freshly-rotated client instead.
         """
         ws = self._ws
         if ws is None or ws.closed:
+            return False
+        try:
+            if getattr(ws, "closing", False):
+                return False
+        except Exception:  # noqa: BLE001 (older aiohttp: no closing attr)
+            pass
+        return True
+
+    async def async_send_talk(self, payload: bytes) -> None:
+        """Write one talk-back frame on this live session.
+
+        Raises TalkSendError if the session is gone or mid-teardown (read
+        loop owns reconnects; concurrent send/receive on aiohttp WS is safe).
+        """
+        if not self.is_sendable():
             raise TalkSendError("live session not active")
         try:
-            await ws.send_bytes(payload)
+            await self._ws.send_bytes(payload)
         except Exception as err:  # noqa: BLE001
             raise TalkSendError(f"talk send failed: {err}") from err
 

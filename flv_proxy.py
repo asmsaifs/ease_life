@@ -48,6 +48,11 @@ PRECONNECT_AGE = 50.0
 WATCHDOG_SILENCE = 10.0
 STANDBY_BUFFER_LIMIT = 2 * 1024 * 1024
 STANDBY_RETRY_COOLDOWN = 5.0
+# Bounded wait for a talk frame when the live upstream is mid-rotation (the
+# standby handover completes in well under a second; keep the cap small so a
+# dead upstream surfaces as a clear error instead of a long hang).
+TALK_SEND_RETRY_SECONDS = 2.0
+TALK_SEND_RETRY_STEP = 0.1
 # The camera's G.711 audio clock runs slower than its video clock and drifts
 # further every session; muxing both into one timeline leaves HA's muxer out of
 # sync (see evidence/E-011).  Video-only is therefore the default; audio can be
@@ -668,21 +673,40 @@ class FlvProxy:
     def talk_sender(self, device_id: str):
         """Return an async talk-frame sender on the live upstream, if any.
 
-        The callable re-resolves the current client on every call, so it
-        survives the ~82 s upstream rotations.  Returns None when no upstream
-        session is active (caller should open a dedicated talk session).
+        The callable re-resolves the current client on every call and, when
+        that client is mid-teardown (standby handover at PRECONNECT_AGE or the
+        server's ~60-100 s session cap), waits briefly for the freshly rotated
+        client instead of failing the utterance on one dropped frame.
+
+        A sender is returned while ANY subscriber is watching: the VRS server
+        does not tolerate a second concurrent live session, so speak must ride
+        the proxy's upstream even during a connect/handover gap -- falling back
+        to a dedicated session there would be killed ("Cannot write to closing
+        transport").  Returns None only when no live watch and no client exist
+        (caller may then safely open a dedicated talk session).
         """
         stream = self._streams.get(device_id)
         if stream is None:
             return None
 
         async def _send(payload: bytes) -> None:
-            client = stream._client
-            if client is None:
-                raise TalkSendError("live session not active")
-            await client.async_send_talk(payload)
+            deadline = time.monotonic() + TALK_SEND_RETRY_SECONDS
+            last_err = None
+            while True:
+                client = stream._client
+                if client is not None and client.is_sendable():
+                    try:
+                        await client.async_send_talk(payload)
+                        return
+                    except TalkSendError as err:
+                        last_err = err
+                elif client is not None:
+                    last_err = TalkSendError("live session closing")
+                if time.monotonic() >= deadline:
+                    raise last_err or TalkSendError("live session not active")
+                await asyncio.sleep(TALK_SEND_RETRY_STEP)
 
-        if stream._client is None:
+        if not stream.subscribers and stream._client is None:
             return None
         return _send
 
