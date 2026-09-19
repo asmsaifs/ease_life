@@ -4,11 +4,22 @@ Mirrors the official web player (AudioTalkPlugin in webPlayer.min.js), which
 rides the live VRS WebSocket session:
 
   BIN 0x07 + u32BE(len(json)) + json + raw G.711A bytes
-    json = {"enctype":0,"channelCount":1,"sampleRate":8000,"timeSpan":20}
+    json = urlencode({"enctype":0,"channelCount":1,"sampleRate":8000,
+                      "timeSpan":300})
   stop: BIN 0x02 + u32BE(len(json)) + json (no audio bytes)
+        json = urlencode("{}")
+
+Exact wire facts excavated from webPlayer.min.js (release 20260612):
+  - The JSON header is percent-encoded (AudioTalkPlugin builds it via
+    string2Unit8Array == TextEncoder(encodeURIComponent(...))), like every
+    other VRS control JSON; raw JSON is NOT what the server parses.
+  - stop() re-emits the "upload" event with NO arguments, so the STOP JSON
+    stringifies to `{}` (JSON.stringify drops the undefined fields) -- the
+    full header was the E-011 wedge cause (device never recognised STOP and
+    sat awaiting talk frames until a physical reboot).
+  - One frame carries 300 ms of audio (timeSpan: 300), paced in realtime.
 
 Uplink codec mirrors the downlink (audioEncodeType 0 = G711A, 8 kHz mono).
-Audio is chunked in 20 ms frames (160 samples) paced in realtime.
 """
 
 from __future__ import annotations
@@ -32,8 +43,8 @@ CMD_SYNC = 0x03
 
 SAMPLE_RATE = 8000
 CHANNELS = 1
-FRAME_MS = 20
-FRAME_SAMPLES = SAMPLE_RATE * FRAME_MS // 1000  # 160
+FRAME_MS = 300
+FRAME_SAMPLES = SAMPLE_RATE * FRAME_MS // 1000  # 2400
 
 
 class TalkError(Exception):
@@ -41,9 +52,12 @@ class TalkError(Exception):
 
 
 def _talk_header() -> bytes:
-    js = json.dumps({"enctype": 0, "channelCount": CHANNELS,
-                     "sampleRate": SAMPLE_RATE,
-                     "timeSpan": FRAME_MS}).encode()
+    js = urllib.parse.quote(
+        json.dumps({"enctype": 0, "channelCount": CHANNELS,
+                    "sampleRate": SAMPLE_RATE,
+                    "timeSpan": FRAME_MS}),
+        safe="",
+    ).encode()
     return len(js).to_bytes(4, "big") + js
 
 
@@ -52,7 +66,8 @@ def talk_data_frame(alaw_chunk: bytes) -> bytes:
 
 
 def talk_stop_frame() -> bytes:
-    return bytes([CMD_TALK_STOP]) + _talk_header()
+    js = urllib.parse.quote("{}", safe="").encode()
+    return bytes([CMD_TALK_STOP]) + len(js).to_bytes(4, "big") + js
 
 
 async def async_stream_pcm16(send_fn, pcm: bytes) -> float:
@@ -63,7 +78,7 @@ async def async_stream_pcm16(send_fn, pcm: bytes) -> float:
     Raises TalkError/TalkSendError when the session is gone.
     """
     frame_bytes = FRAME_SAMPLES * 2
-    # Pad tail with silence so every chunk is a full 20 ms frame.
+    # Pad tail with silence so every chunk is a full frame (300 ms).
     if len(pcm) % frame_bytes:
         pcm += b"\x00" * (frame_bytes - len(pcm) % frame_bytes)
     nframes = len(pcm) // frame_bytes

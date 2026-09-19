@@ -35,13 +35,16 @@ PLATFORMS = ["camera"]
 SERVICE_PTZ = "ptz"
 SERVICE_SPEAK = "speak"
 
-# SAFETY (2026-09-17, E-011): uplink audio wedges this camera's audio pipeline
-# for ALL clients until a physical reboot (confirmed: mobile app talk also
-# broke after HA sent audio).  Root cause unknown (missing start handshake?
-# aborted utterance without STOP?).  The speak service stays registered so
-# automations keep resolving, but refuses to transmit until the handshake is
-# understood.  PTZ and listen (downlink) are unaffected.
-SPEAK_UPLINK_ENABLED = False
+# SAFETY (2026-09-17, E-011): uplink audio used to wedge this camera's audio
+# pipeline for ALL clients until a physical reboot.  Root cause excavated from
+# webPlayer.min.js (E-011, 2026-09-20): the talk frame JSON header must be
+# percent-encoded and the STOP frame must carry an EMPTY json object `{}`
+# (the SDK's AudioTalkPlugin.stop() emits "upload" with no args, so
+# JSON.stringify yields `{}`); v0.3.x sent raw JSON + the full header STOP,
+# which the device never recognised, leaving it awaiting talk frames.
+# speak now matches the SDK wire exactly (timeSpan 300 ms, urlencoded JSON,
+# `{}` STOP).  PTZ and listen (downlink) are unaffected.
+SPEAK_UPLINK_ENABLED = True
 
 PTZ_SCHEMA = vol.Schema(
     {
@@ -291,7 +294,8 @@ def _transcode_to_pcm16_8k(extension: str, data: bytes) -> bytes:
         for frame in container.decode(audio):
             for resampled in resampler.resample(frame):
                 out += bytes(resampled.planes[0])
-    # Drop a partial tail so the speaker gets whole 20 ms frames.
+    # Drop a partial tail so the speaker gets whole 300 ms frames (the talk
+    # streamer pads to full frames anyway; align to the 20 ms base too).
     tail = len(out) % 320
     if tail:
         del out[len(out) - tail:]
