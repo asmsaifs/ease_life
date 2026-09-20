@@ -1,7 +1,7 @@
 {
   "domain": "ease_life",
   "name": "Ease Life Camera",
-  "version": "0.3.3",
+  "version": "0.3.6",
   "documentation": "https://github.com/asmsaifs/ease_life",
   "dependencies": [],
   "codeowners": [],

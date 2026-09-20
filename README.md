@@ -19,8 +19,8 @@ and a Frigate-ready feed.
   `home` (pan/tilt where the model supports it; the entity reports
   `ptz_supported`).
 - **Speak** — `ease_life.speak` service renders text with an HA text-to-speech
-  engine and plays it on the camera speaker. **Currently disabled by default**
-  (see *Known issues*).
+  engine and plays it on the camera speaker, with or without a live video
+  window open.
 - **Listen (opt-in)** — `enable_audio` option adds AAC audio to the live
   stream (the camera ships G.711, which HA cannot mux, so the integration
   transcodes).
@@ -81,8 +81,9 @@ data:
   message: "Someone is at the door"
   engine: tts.my_engine   # optional, defaults to the HA default TTS engine
 ```
-> Currently refused with a clear error until the talk handshake is fully
-> reverse-engineered (see *Known issues*).
+> Speak works with the video window open or closed: it rides the live session
+> while someone is watching and falls back to a standalone session otherwise,
+> recovering automatically when the upstream is mid-rotation.
 
 ## Frigate
 
@@ -117,14 +118,11 @@ bundled go2rtc at the same URL and consume it as RTSP.
   are re-paced so no frames are dropped, and a watchdog reconnects quiet
   sessions.
 - PTZ uses the vendor device-control WebSocket (`request 1793 / sub 5`).
-- Talk-back uses G.711A audio frames over the live session.
+- Talk-back uses G.711A audio frames over the live session when one is open,
+  or over a dedicated session started on demand.
 
 ## Known issues
 
-- **Speak is disabled.** Test transmissions left some camera units' audio
-  pipeline wedged for all clients until a physical reboot. The service stays
-  registered but refuses with an explanatory error until the talk
-  start/stop handshake is fully understood. PTZ and video are unaffected.
 - The vendor cloud occasionally stalls or caps sessions; the integration
   reconnects automatically (watch for `ease_life: upstream silent` warnings).
 - After Home Assistant restarts, hard-refresh the browser tab once so the
@@ -138,9 +136,17 @@ thumbnails, live relay). No analytics, no third parties.
 
 ## Version history
 
-- 0.3.3 — LAN bind + token auth for the bridge (Frigate feed).
+- 0.3.6 — Speak standalone reliability: tear down a dead upstream before the
+  fallback session, retry that session once if the server has not released
+  the previous live slot yet; ride failures no longer block speak.
+- 0.3.5 — Speak without a live viewer: drop stale watchers, fall back to a
+  dedicated session when nobody is watching.
+- 0.3.4 — Speak survives upstream rotation: ride the freshly rotated client,
+  retry frames across the ~60–100 s server session cap / standby handover.
+- 0.3.3 — LAN bind + token auth for the bridge (Frigate feed); talk re-enabled
+  with the exact SDK wire format (urlencoded header, `timeSpan:300`,
+  correct STOP frame).
 - 0.3.2 — Seamless session handover + silence watchdog (smooth playback).
-- 0.3.0 — PTZ service, speak service (now disabled, see above), AAC listen
-  option.
+- 0.3.0 — PTZ service, speak service (see history above), AAC listen option.
 - 0.2.2 — Timestamp repair: no more dropped keyframes / frozen playback.
 - 0.2.x — Initial snapshot + live video integration.
