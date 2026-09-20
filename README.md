@@ -82,8 +82,9 @@ data:
   engine: tts.my_engine   # optional, defaults to the HA default TTS engine
 ```
 > Speak works with the video window open or closed: it rides the live session
-> while someone is watching and falls back to a standalone session otherwise,
-> recovering automatically when the upstream is mid-rotation.
+> while someone is watching, and when nobody is it starts a temporary hidden
+> live session, rides it, and tears it down — so speak no longer requires a
+> video stream to be running.
 
 ## Frigate
 
@@ -136,6 +137,10 @@ thumbnails, live relay). No analytics, no third parties.
 
 ## Version history
 
+- 0.3.7 — Speak no longer needs a video stream running: it transparently
+  starts a hidden live-upstream session when nobody is watching, rides it for
+  the utterance, then tears it down (the server kills a second concurrent
+  session, so speak MUST ride a live one).
 - 0.3.6 — Speak standalone reliability: tear down a dead upstream before the
   fallback session, retry that session once if the server has not released
   the previous live slot yet; ride failures no longer block speak.

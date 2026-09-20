@@ -680,10 +680,37 @@ class FlvProxy:
             self._streams[device_id] = stream
         return stream
 
-    def has_active_watcher(self, device_id: str) -> bool:
-        """True if someone is currently watching this device's live stream."""
+    async def hidden_talk_sender(self, device_id: str, timeout: float = 8.0):
+        """Return a talk sender riding a live upstream, starting one hidden if needed.
+
+        Speak must ride a live session: the VRS server kills a second concurrent
+        session, so a dedicated standalone session is unreliable.  If no live
+        upstream is running, subscribe a ghost watcher to force the pump to
+        connect one, then wait for a sendable client.
+
+        Returns ``(sender, owner)`` where ``owner`` is True when the caller
+        started this upstream and MUST ``await stop_device(device_id)`` when
+        done.  Returns ``(None, owner)`` if no upstream could be established
+        within ``timeout`` seconds; the ghost is then unsubscribed so the pump
+        is cancelled and the caller may safely open a standalone session.
+        """
         stream = self._streams.get(device_id)
-        return stream is not None and stream.active_watchers > 0
+        if stream is not None and (
+                stream.active_watchers > 0 or stream._client is not None):
+            return self.talk_sender(device_id), False
+        stream = self._stream(device_id)
+        ghost = stream.subscribe()
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            sender = self.talk_sender(device_id)
+            if sender is not None:
+                return sender, True
+            await asyncio.sleep(TALK_SEND_RETRY_STEP)
+        _LOGGER.warning(
+            "ease_life: hidden upstream for %s did not become sendable "
+            "within %.0fs", device_id, timeout)
+        stream.unsubscribe(ghost)
+        return None, True
 
     async def stop_device(self, device_id: str) -> None:
         """Tear down this device's live upstream and release its session.

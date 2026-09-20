@@ -259,35 +259,37 @@ def _async_register_services(hass: HomeAssistant) -> None:
             raise HomeAssistantError("TTS produced no audio")
         params = await coordinator.async_live_params(device_id)
         sender = None
+        owner = False
         proxy = getattr(coordinator, "flv_proxy", None)
         if proxy is not None:
-            # Prefer the already-running live upstream: the VRS server does
-            # not tolerate a second concurrent live session well (it goes
-            # quiet and is then closed, killing a dedicated talk session).
-            # A sender is only obtained while someone is actually watching
-            # or an upstream client is live.
-            sender = proxy.talk_sender(device_id)
+            # Speak must ride a live upstream: the VRS server kills a second
+            # concurrent session, so a standalone session is unreliable while
+            # any live session exists.  If nobody is watching, start a hidden
+            # upstream, ride it, and tear it down when speak is done.
+            sender, owner = await proxy.hidden_talk_sender(device_id)
         try:
             if sender is not None:
                 try:
                     await talk.async_stream_pcm16(sender, pcm)
                     await sender(talk.talk_stop_frame())
                 except vrs_live.TalkSendError as err:
-                    # The ride died mid-flight (leftover proxy session from a
-                    # closed window, or a mid-rotation close).  Tear the
-                    # zombie upstream down first (else the server treats the
-                    # dedicated session as a second concurrent live session
-                    # and kills it), then fall back to a standalone session.
+                    # The ride died mid-flight (standby handover or server cap).
+                    # Tear the upstream down first so the standalone session is
+                    # not the second concurrent one the server kills.
                     _LOGGER.warning(
-                        "ease_life: live upstream unavailable (%s); "
-                        "using a dedicated talk session", err)
+                        "ease_life: ride died (%s); retrying on a fresh "
+                        "standalone session", err)
                     if proxy is not None:
                         await proxy.stop_device(device_id)
+                    owner = False
                     await talk.async_speak_pcm16(hass, params, device_id, pcm)
             else:
                 await talk.async_speak_pcm16(hass, params, device_id, pcm)
         except (talk.TalkError, vrs_live.TalkSendError) as err:
             raise HomeAssistantError(f"speak failed: {err}") from err
+        finally:
+            if owner and proxy is not None:
+                await proxy.stop_device(device_id)
 
     hass.services.async_register(DOMAIN, SERVICE_PTZ, async_handle_ptz,
                                  schema=PTZ_SCHEMA)
