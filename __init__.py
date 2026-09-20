@@ -273,18 +273,16 @@ def _async_register_services(hass: HomeAssistant) -> None:
                     await talk.async_stream_pcm16(sender, pcm)
                     await sender(talk.talk_stop_frame())
                 except vrs_live.TalkSendError as err:
-                    # The ride died mid-flight.  If nobody is watching the
-                    # stream, fall back to a dedicated session rather than
-                    # failing the whole speak.
-                    watching = (
-                        proxy is not None
-                        and proxy.has_active_watcher(device_id)
-                    )
-                    if watching:
-                        raise
+                    # The ride died mid-flight (leftover proxy session from a
+                    # closed window, or a mid-rotation close).  Tear the
+                    # zombie upstream down first (else the server treats the
+                    # dedicated session as a second concurrent live session
+                    # and kills it), then fall back to a standalone session.
                     _LOGGER.warning(
                         "ease_life: live upstream unavailable (%s); "
                         "using a dedicated talk session", err)
+                    if proxy is not None:
+                        await proxy.stop_device(device_id)
                     await talk.async_speak_pcm16(hass, params, device_id, pcm)
             else:
                 await talk.async_speak_pcm16(hass, params, device_id, pcm)

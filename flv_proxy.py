@@ -685,6 +685,26 @@ class FlvProxy:
         stream = self._streams.get(device_id)
         return stream is not None and stream.active_watchers > 0
 
+    async def stop_device(self, device_id: str) -> None:
+        """Tear down this device's live upstream and release its session.
+
+        Used by speak when the ride fails: the VRS server does not tolerate a
+        second concurrent live session, so a trailing ("ghost") upstream from
+        a closed window or a mid-rotation close must be fully shut down before
+        opening a dedicated talk session, or the server kills that session too
+        ("Cannot write to closing transport").
+        """
+        stream = self._streams.pop(device_id, None)
+        if stream is None:
+            return
+        task = stream._task
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
     def talk_sender(self, device_id: str):
         """Return an async talk-frame sender on the live upstream, if any.
 

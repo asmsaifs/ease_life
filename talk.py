@@ -166,17 +166,43 @@ class TalkSession:
 
 
 async def async_speak_pcm16(hass, live_params, device_id: str, pcm: bytes) -> float:
-    """Open a talk session, play s16le/8kHz/mono PCM, stop, close."""
-    session = TalkSession(live_params["vrs_host"], live_params["token"],
-                          device_id,
-                          live_params.get("product_key", ""))
-    try:
-        await session.open()
-        seconds = await session.send_pcm16(pcm)
-    finally:
+    """Open a talk session, play s16le/8kHz/mono PCM, stop, close.
+
+    Retries once when the very first frame fails on a closing transport: the
+    VRS server does not tolerate a second concurrent live session, so a fresh
+    dedicated session can be opened and killed again seconds after a window
+    was closed (the server has not released the slot yet).  The retry is only
+    taken when nothing had streamed yet, so audio is never doubled.
+    """
+    seconds = None
+    for attempt in (1, 2):
+        session = TalkSession(live_params["vrs_host"], live_params["token"],
+                              device_id,
+                              live_params.get("product_key", ""))
+        first_frame_at = None
         try:
-            await session.stop()
+            await session.open()
+            first_frame_at = time.monotonic()
+            seconds = await session.send_pcm16(pcm)
+        except TalkError as err:
+            first_frame = (
+                first_frame_at is not None
+                and time.monotonic() - first_frame_at < 0.2
+            )
+            if attempt == 2 or not first_frame:
+                # Not a first-frame failure (audio may have started, never
+                # retry) or the retry itself failed: surface it.
+                raise
+            _LOGGER.warning(
+                "ease_life: dedicated talk session closed on first frame "
+                "(%s); retrying after server releases the old session", err)
+            await asyncio.sleep(2.0)
+        else:
+            break
         finally:
-            await session.close()
+            try:
+                await session.stop()
+            finally:
+                await session.close()
     _LOGGER.debug("ease_life: spoke %.1fs of audio", seconds)
     return seconds
